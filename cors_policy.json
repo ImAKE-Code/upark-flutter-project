@@ -1,0 +1,12 @@
+[
+  {
+    "AllowedOrigins": [
+      "http://localhost:*",
+      "https://upark-suvarnabhumi.web.app"
+    ],
+    "AllowedMethods": [
+      "GET"
+    ],
+    "AllowedHeaders": []
+  }
+]
