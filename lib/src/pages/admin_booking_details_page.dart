@@ -1,7 +1,9 @@
-// ---- lib/src/pages/admin_booking_details_page.dart (ฉบับสมบูรณ์) ----
+// ---- lib/src/pages/admin_booking_details_page.dart (ฉบับสมบูรณ์ - ไม่มีการเปลี่ยนแปลง) ----
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+
+// ไม่มี import admin_booking_list_page.dart ที่นี่แล้ว
 
 class AdminBookingDetailsPage extends StatefulWidget {
   final String bookingId;
@@ -13,8 +15,12 @@ class AdminBookingDetailsPage extends StatefulWidget {
 }
 
 class _AdminBookingDetailsPageState extends State<AdminBookingDetailsPage> {
+  // เมธอด _printReceipt เหมือนเดิม
+  // เมธอด _buildDetailSection เหมือนเดิม (เวอร์ชันที่รับ Map<String, String> details)
+
   @override
   Widget build(BuildContext context) {
+    // โค้ด build เหมือนเดิม (ตามที่อยู่ใน context ล่าสุดของคุณ)
     return Scaffold(
       appBar: AppBar(
         title: Text('รายละเอียดการจอง #${widget.bookingId.substring(0, 6)}'),

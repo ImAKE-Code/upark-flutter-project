@@ -1,9 +1,10 @@
-// ---- lib/src/pages/admin_expense_page.dart (ฉบับสมบูรณ์ แก้ไข Scaffold ซ้อน) ----
+// ---- lib/src/pages/admin_expense_page.dart (ฉบับสมบูรณ์ แก้ไข Scaffold ซ้อน และปรับปรุง Error Handling) ----
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // เพิ่ม import นี้
 import '../../services/excel_service.dart';
 
 class AdminExpensePage extends StatefulWidget {
@@ -43,40 +44,110 @@ class _AdminExpensePageState extends State<AdminExpensePage> {
     'อื่นๆ'
   ];
 
-  // --- ฟังก์ชันสำหรับสร้าง Stream แบบไดนามิก ---
-  Stream<QuerySnapshot> _getExpensesStream() {
-    final DateTime startDate = DateTime(_selectedYear, _selectedMonth, 1);
-    final DateTime endDate = (_selectedMonth == 12)
-        ? DateTime(_selectedYear + 1, 1, 1)
-        : DateTime(_selectedYear, _selectedMonth + 1, 1);
+  bool _isAdmin = false;
 
-    return FirebaseFirestore.instance
-        .collection('expenses')
-        .where('createdAt',
-            isGreaterThanOrEqualTo: Timestamp.fromDate(startDate))
-        .where('createdAt', isLessThan: Timestamp.fromDate(endDate))
-        .orderBy('createdAt', descending: true)
-        .snapshots();
+  @override
+  void initState() {
+    super.initState();
+    _checkAdminStatus();
+    FirebaseAuth.instance.authStateChanges().listen((user) {
+      if (user != null) {
+        user.getIdTokenResult(true).then((idTokenResult) {
+          if (mounted) {
+            final newIsAdminStatus = idTokenResult.claims?['admin'] == true;
+            if (_isAdmin != newIsAdminStatus) {
+              setState(() {
+                _isAdmin = newIsAdminStatus;
+                if (_isAdmin) {
+                  // หากสถานะ Admin เปลี่ยนเป็น true ให้โหลดข้อมูลใหม่ทั้งหมด
+                  // นี่คือจุดที่เราจะเรียก _loadInitialBookings หรือ _resetAndLoadBookings
+                  // แต่สำหรับหน้านี้ (Expense Page) StreamBuilder จะจัดการเอง
+                } else {
+                  // ถ้าสถานะเปลี่ยนเป็นไม่ใช่ Admin ให้เคลียร์ข้อมูล
+                }
+              });
+            }
+          }
+        });
+      } else {
+        if (mounted) {
+          setState(() {
+            _isAdmin = false;
+          });
+        }
+      }
+    });
+  }
+
+  // ฟังก์ชันสำหรับตรวจสอบสถานะ Admin ตั้งแต่แรก
+  Future<void> _checkAdminStatus() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null && !user.isAnonymous) {
+      final idTokenResult = await user.getIdTokenResult(true);
+      if (mounted) {
+        setState(() {
+          _isAdmin = idTokenResult.claims?['admin'] == true;
+        });
+      }
+    }
+  }
+
+  // --- ฟังก์ชันสำหรับสร้าง Stream แบบไดนามิก ---
+  Stream<QuerySnapshot?> _getExpensesStream() {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null || user.isAnonymous) {
+      return Stream.value(null);
+    }
+
+    return Stream.fromFuture(user.getIdTokenResult(true))
+        .asyncExpand((idTokenResult) {
+      final claims = idTokenResult.claims;
+      final isAdmin = claims?['admin'] == true;
+
+      if (!isAdmin) {
+        return Stream.value(null);
+      }
+
+      final DateTime startDate = DateTime(_selectedYear, _selectedMonth, 1);
+      final DateTime endDate = (_selectedMonth == 12)
+          ? DateTime(_selectedYear + 1, 1, 1)
+          : DateTime(_selectedYear, _selectedMonth + 1, 1);
+
+      return FirebaseFirestore.instance
+          .collection('expenses')
+          .where('createdAt',
+              isGreaterThanOrEqualTo: Timestamp.fromDate(startDate))
+          .where('createdAt', isLessThan: Timestamp.fromDate(endDate))
+          .orderBy('createdAt', descending: true)
+          .snapshots();
+    });
   }
 
   // --- ฟังก์ชันสำหรับ Export ---
   Future<void> _exportFilteredData() async {
-    final stream = _getExpensesStream();
-    final snapshot = await stream.first;
-    final expenses = snapshot.docs;
+    try {
+      final stream = _getExpensesStream();
+      final QuerySnapshot? snapshot = await stream.first;
 
-    if (expenses.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('ไม่มีข้อมูลให้ Export ในช่วงเวลาที่เลือก'),
-              backgroundColor: Colors.orange),
-        );
+      if (snapshot == null || snapshot.docs.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('ไม่มีข้อมูลให้ Export หรือคุณไม่มีสิทธิ์'),
+                backgroundColor: Colors.orange),
+          );
+        }
+        return;
       }
-      return;
+      await ExcelService.exportExpensesToExcel(
+          snapshot.docs, _selectedYear, _selectedMonth);
+    } catch (e) {
+      if (mounted) {
+        _showErrorDialog('ข้อผิดพลาดในการ Export ข้อมูล',
+            'ไม่สามารถ Export ข้อมูลได้: ${e.toString()}');
+      }
     }
-    await ExcelService.exportExpensesToExcel(
-        expenses, _selectedYear, _selectedMonth);
   }
 
   // --- ฟังก์ชันสำหรับแสดง Dialog เพิ่ม/แก้ไข ---
@@ -126,11 +197,13 @@ class _AdminExpensePageState extends State<AdminExpensePage> {
                           FilteringTextInputFormatter.allow(
                               RegExp(r'^\d+\.?\d{0,2}'))
                         ],
-                        validator: (value) {
-                          if (value == null || value.isEmpty)
+                        validator: (String? value) {
+                          if (value == null || value.isEmpty) {
                             return 'กรุณากรอกจำนวนเงิน';
-                          if (double.tryParse(value) == null)
+                          }
+                          if (double.tryParse(value) == null) {
                             return 'กรุณากรอกเป็นตัวเลข';
+                          }
                           return null;
                         },
                       ),
@@ -161,7 +234,7 @@ class _AdminExpensePageState extends State<AdminExpensePage> {
                     tooltip: 'ลบรายการนี้',
                     onPressed: () {
                       Navigator.of(context).pop();
-                      _deleteExpense(expenseDoc.id);
+                      _deleteExpense(expenseDoc!.id);
                     },
                   ),
                 const Spacer(),
@@ -176,7 +249,7 @@ class _AdminExpensePageState extends State<AdminExpensePage> {
                         item: itemController.text,
                         amount: double.parse(amountController.text),
                         category: selectedCategory!,
-                        docId: isEditing ? expenseDoc.id : null,
+                        docId: isEditing ? expenseDoc!.id : null,
                       );
                       Navigator.of(context).pop();
                     }
@@ -192,22 +265,72 @@ class _AdminExpensePageState extends State<AdminExpensePage> {
   }
 
   // --- ฟังก์ชันสำหรับบันทึกข้อมูล ---
-  Future<void> _submitExpense(
-      {required String item,
-      required double amount,
-      required String category,
-      String? docId}) async {
-    // ... โค้ด submitExpense เหมือนเดิม ...
+  Future<void> _submitExpense({
+    required String item,
+    required double amount,
+    required String category,
+    String? docId,
+  }) async {
+    try {
+      final data = {
+        'item': item,
+        'amount': amount,
+        'category': category,
+        'createdAt': FieldValue.serverTimestamp(),
+      };
+
+      if (docId == null) {
+        await FirebaseFirestore.instance.collection('expenses').add(data);
+      } else {
+        await FirebaseFirestore.instance
+            .collection('expenses')
+            .doc(docId)
+            .update(data);
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('บันทึกรายการสำเร็จ'),
+            backgroundColor: Colors.green));
+      }
+    } on FirebaseException catch (e) {
+      // ดักจับ FirebaseException
+      if (mounted) {
+        _showErrorDialog('บันทึกข้อมูลไม่สำเร็จ', _getFriendlyErrorMessage(e));
+      }
+    } catch (e) {
+      if (mounted) {
+        _showErrorDialog(
+            'เกิดข้อผิดพลาด', 'ไม่สามารถบันทึกข้อมูลได้: ${e.toString()}');
+      }
+    }
   }
 
   // --- ฟังก์ชันสำหรับลบข้อมูล ---
   Future<void> _deleteExpense(String docId) async {
-    // ... โค้ด deleteExpense เหมือนเดิม ...
+    try {
+      await FirebaseFirestore.instance
+          .collection('expenses')
+          .doc(docId)
+          .delete();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('ลบรายการสำเร็จ'), backgroundColor: Colors.green));
+      }
+    } on FirebaseException catch (e) {
+      // ดักจับ FirebaseException
+      if (mounted) {
+        _showErrorDialog('ลบข้อมูลไม่สำเร็จ', _getFriendlyErrorMessage(e));
+      }
+    } catch (e) {
+      if (mounted) {
+        _showErrorDialog(
+            'เกิดข้อผิดพลาด', 'ไม่สามารถลบข้อมูลได้: ${e.toString()}');
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // --- เอา Scaffold ที่ครอบทั้งหมดออก และคืนค่าเป็น Column โดยตรง ---
     return Column(
       children: [
         // ส่วนของ Filter และปุ่ม Export
@@ -227,8 +350,9 @@ class _AdminExpensePageState extends State<AdminExpensePage> {
                               value: year, child: Text(year.toString())))
                           .toList(),
                       onChanged: (value) {
-                        if (value != null)
+                        if (value != null) {
                           setState(() => _selectedYear = value);
+                        }
                       },
                     ),
                   ),
@@ -243,8 +367,9 @@ class _AdminExpensePageState extends State<AdminExpensePage> {
                           (index) => DropdownMenuItem(
                               value: index + 1, child: Text(_months[index]))),
                       onChanged: (value) {
-                        if (value != null)
+                        if (value != null) {
                           setState(() => _selectedMonth = value);
+                        }
                       },
                     ),
                   ),
@@ -268,15 +393,23 @@ class _AdminExpensePageState extends State<AdminExpensePage> {
 
         // StreamBuilder สำหรับแสดงผล
         Expanded(
-          child: StreamBuilder<QuerySnapshot>(
+          child: StreamBuilder<QuerySnapshot?>(
             stream: _getExpensesStream(),
             builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting)
+              if (snapshot.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator());
-              if (snapshot.hasError)
+              }
+              if (snapshot.data == null) {
+                // ไม่มีสิทธิ์เข้าถึง หรือเป็น Anonymous
+                return _buildPermissionDeniedState();
+              }
+              if (snapshot.hasError) {
+                // Error อื่นๆ จาก Firestore
                 return Center(child: Text('เกิดข้อผิดพลาด: ${snapshot.error}'));
-              if (!snapshot.hasData || snapshot.data!.docs.isEmpty)
+              }
+              if (snapshot.data!.docs.isEmpty) {
                 return _buildEmptyState(isFiltered: true);
+              }
 
               final expenses = snapshot.data!.docs;
               double totalAmount = expenses.fold(
@@ -286,7 +419,6 @@ class _AdminExpensePageState extends State<AdminExpensePage> {
                       ((doc.data() as Map<String, dynamic>)['amount'] as num? ??
                           0.0));
 
-              // --- สร้าง Scaffold ใหม่ข้างในนี้ เพื่อให้ FAB ทำงานได้ถูกต้อง ---
               return Scaffold(
                 body: Column(
                   children: [
@@ -324,13 +456,14 @@ class _AdminExpensePageState extends State<AdminExpensePage> {
                     ),
                   ],
                 ),
-                floatingActionButton: FloatingActionButton(
-                  onPressed: () => _showAddExpenseDialog(),
-                  tooltip: 'เพิ่มรายการค่าใช้จ่าย',
-                  child: const Icon(Icons.add),
-                ),
+                floatingActionButton: _isAdmin
+                    ? FloatingActionButton(
+                        onPressed: () => _showAddExpenseDialog(),
+                        tooltip: 'เพิ่มรายการค่าใช้จ่าย',
+                        child: const Icon(Icons.add),
+                      )
+                    : null,
               );
-              // --------------------------------------------------------
             },
           ),
         ),
@@ -338,7 +471,55 @@ class _AdminExpensePageState extends State<AdminExpensePage> {
     );
   }
 
-  // --- Helper Widgets ---
+  // --- Helper Widgets และ Methods สำหรับ Error Handling ---
+
+  // เมธอดสำหรับแสดง Error Dialog
+  void _showErrorDialog(String title, String content) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.error_outline, color: Colors.red),
+              const SizedBox(width: 10),
+              Text(title),
+            ],
+          ),
+          content: Text(content),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('ตกลง'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // เมธอดสำหรับแปลง FirebaseException ให้เป็นข้อความที่เข้าใจง่าย
+  String _getFriendlyErrorMessage(FirebaseException e) {
+    switch (e.code) {
+      case 'permission-denied':
+        return 'คุณไม่มีสิทธิ์ในการดำเนินการนี้ กรุณาตรวจสอบสิทธิ์ของคุณ';
+      case 'unavailable':
+        return 'ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต';
+      case 'already-exists':
+        return 'รายการนี้มีอยู่แล้วในระบบ';
+      case 'not-found':
+        return 'ไม่พบรายการที่ต้องการดำเนินการ';
+      case 'aborted':
+        return 'การดำเนินการถูกยกเลิก กรุณาลองใหม่อีกครั้ง';
+      case 'internal':
+        return 'เกิดข้อผิดพลาดภายในระบบ กรุณาลองใหม่อีกครั้ง';
+      default:
+        return 'เกิดข้อผิดพลาดที่ไม่คาดคิด: ${e.message ?? e.code}';
+    }
+  }
+
   Widget _buildSummaryCard(String title, double amount) {
     final formattedAmount = NumberFormat("#,##0.00", "en_US").format(amount);
     return Card(
@@ -373,14 +554,28 @@ class _AdminExpensePageState extends State<AdminExpensePage> {
                   ? 'ไม่พบข้อมูลในเดือน/ปีที่เลือก'
                   : 'ยังไม่มีรายการค่าใช้จ่าย',
               style: TextStyle(color: Colors.grey[600], fontSize: 18)),
-          if (!isFiltered) ...[
-            const SizedBox(height: 20),
-            FloatingActionButton.extended(
-              onPressed: () => _showAddExpenseDialog(),
-              label: const Text('เพิ่มรายการแรก'),
-              icon: const Icon(Icons.add),
-            )
-          ]
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPermissionDeniedState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.lock_outline, size: 64, color: Colors.red[400]),
+          const SizedBox(height: 16),
+          const Text(
+            'คุณไม่มีสิทธิ์เข้าถึงหน้านี้',
+            style: TextStyle(
+                color: Colors.red, fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'กรุณาตรวจสอบสิทธิ์ Admin ของคุณ',
+            style: TextStyle(color: Colors.grey[600], fontSize: 16),
+          ),
         ],
       ),
     );

@@ -1,4 +1,4 @@
-// ---- lib/src/pages/customer_booking_details_page.dart (ฉบับสมบูรณ์ Final) ----
+// ---- lib/src/pages/customer_booking_details_page.dart (แก้ไขการแสดงรายละเอียดค่าใช้จ่าย) ----
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -51,7 +51,8 @@ class _CustomerBookingDetailsPageState
     required BuildContext context,
     required String title,
     required IconData icon,
-    required Map<String, String> details,
+    required List<Widget>
+        detailWidgets, // เปลี่ยนจาก Map<String, String> เป็น List<Widget>
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -72,27 +73,31 @@ class _CustomerBookingDetailsPageState
         Padding(
           padding: const EdgeInsets.only(left: 32.0),
           child: Column(
-            children: details.entries
-                .map((entry) => Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4.0),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          SizedBox(
-                              width: 150,
-                              child: Text('${entry.key}:',
-                                  style: TextStyle(color: Colors.grey[700]))),
-                          Expanded(
-                              child: Text(entry.value,
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.bold))),
-                        ],
-                      ),
-                    ))
-                .toList(),
+            children: detailWidgets, // ใช้ detailWidgets โดยตรง
           ),
         ),
       ],
+    );
+  }
+
+  // Helper Widget สำหรับแสดงแต่ละบรรทัดรายละเอียด
+  Widget _buildInfoRow(String label, String value,
+      {Color? valueColor, bool isBold = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+              width: 150,
+              child: Text(label, style: TextStyle(color: Colors.grey[700]))),
+          Expanded(
+              child: Text(value,
+                  style: TextStyle(
+                      fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+                      color: valueColor))),
+        ],
+      ),
     );
   }
   // ----------------------------------------------------
@@ -153,11 +158,81 @@ class _CustomerBookingDetailsPageState
               break;
           }
 
-          final double totalCost =
-              (bookingData['totalCost'] as num? ?? 0).toDouble();
+          final double parkingCost =
+              (bookingData['parkingCost'] as num? ?? 0).toDouble();
+          final double shuttleCost =
+              (bookingData['shuttleCost'] as num? ?? 0).toDouble();
+          final double totalCost = (bookingData['totalCost'] as num? ?? 0)
+              .toDouble(); // ราคารวมก่อนส่วนลด
           final double discountAmount =
               (bookingData['discountAmount'] as num? ?? 0).toDouble();
           final String? promoCode = bookingData['promoCodeUsed'];
+
+          // ดึงอัตราค่าบริการเพิ่มเติมสำหรับแจกแจง
+          final double dailyRate =
+              (bookingData['dailyRate'] as num? ?? 0).toDouble();
+          final double hourlyRate =
+              (bookingData['hourlyRate'] as num? ?? 0).toDouble();
+          final double shuttleBasePrice =
+              (bookingData['shuttleBasePrice'] as num? ?? 0).toDouble();
+          final double shuttlePerPersonPrice =
+              (bookingData['shuttlePerPersonPrice'] as num? ?? 0).toDouble();
+
+          // สร้าง List ของ Widget สำหรับรายละเอียดการคำนวณค่าใช้จ่าย
+          List<Widget> costCalculationDetails = [];
+
+          // รายละเอียดค่าจอดรถ
+          if (totalDays > 0) {
+            costCalculationDetails.add(_buildInfoRow(
+                'ค่าจอดรถ (${totalDays} วัน):',
+                '${NumberFormat("#,##0.00").format(totalDays * dailyRate)} บาท'));
+          }
+          if (remainingHours > 0) {
+            costCalculationDetails.add(_buildInfoRow(
+                'ค่าจอดรถ (${remainingHours} ชั่วโมง):',
+                '${NumberFormat("#,##0.00").format(remainingHours * hourlyRate)} บาท'));
+          }
+
+          // รายละเอียดค่ารถรับส่ง
+          if (shuttleType != 'NONE') {
+            int tripCount = (shuttleType == 'ROUND_TRIP') ? 2 : 1;
+            String tripDesc = '';
+            if (shuttleType == 'ONEWAY_DEPART') tripDesc = ' (ขาไป)';
+            if (shuttleType == 'ONEWAY_RETURN') tripDesc = ' (ขากลับ)';
+            if (shuttleType == 'ROUND_TRIP') tripDesc = ' (ไป-กลับ)';
+
+            if (shuttleBasePrice > 0) {
+              costCalculationDetails.add(_buildInfoRow(
+                  'ค่ารถรับส่งพื้นฐาน$tripDesc:',
+                  '${NumberFormat("#,##0.00").format(shuttleBasePrice * tripCount)} บาท'));
+            }
+
+            if (passengerCount > 1 && shuttlePerPersonPrice > 0) {
+              final additionalPassengers = passengerCount - 1;
+              costCalculationDetails.add(_buildInfoRow(
+                  'ค่าผู้โดยสารเพิ่มเติม$tripDesc (${additionalPassengers} คน):',
+                  '${NumberFormat("#,##0.00").format(additionalPassengers * tripCount * shuttlePerPersonPrice)} บาท'));
+            }
+          }
+
+          // ยอดรวม (ก่อนส่วนลด)
+          costCalculationDetails.add(_buildInfoRow('รวมค่าบริการ:',
+              '${NumberFormat("#,##0.00").format(parkingCost + shuttleCost)} บาท',
+              isBold: true));
+
+          // ส่วนลด (ถ้ามี)
+          if (discountAmount > 0) {
+            costCalculationDetails.add(_buildInfoRow(
+                'ส่วนลด (${promoCode ?? 'ไม่ระบุ'}):',
+                '-${NumberFormat("#,##0.00").format(discountAmount)} บาท',
+                valueColor: Colors.green,
+                isBold: true));
+          }
+
+          // ยอดรวมสุทธิ
+          costCalculationDetails.add(_buildInfoRow('ยอดรวมสุทธิที่ชำระ:',
+              '${NumberFormat("#,##0.00").format(totalCost - discountAmount)} บาท',
+              isBold: true, valueColor: Theme.of(context).colorScheme.primary));
 
           return ListView(
             padding: const EdgeInsets.all(16.0),
@@ -166,38 +241,42 @@ class _CustomerBookingDetailsPageState
                 context: context,
                 title: 'ข้อมูลการเดินทาง',
                 icon: Icons.map_outlined,
-                details: {
-                  'สถานะ': bookingData['bookingStatus'] ?? 'N/A',
-                  'ทะเบียนรถ':
-                      '${bookingData['plateNumber'] ?? 'N/A'} (${bookingData['province'] ?? ''})',
-                  'วัน-เวลาเข้าจอด': formatter.format(
-                      (bookingData['checkInDateTime'] as Timestamp).toDate()),
-                  'วัน-เวลาออก': formatter.format(
-                      (bookingData['checkOutDateTime'] as Timestamp).toDate()),
-                  'ระยะเวลาจอดทั้งหมด': durationText,
-                },
+                detailWidgets: [
+                  _buildInfoRow(
+                      'สถานะ:', bookingData['bookingStatus'] ?? 'N/A'),
+                  _buildInfoRow('ทะเบียนรถ:',
+                      '${bookingData['plateNumber'] ?? 'N/A'} (${bookingData['province'] ?? ''})'),
+                  _buildInfoRow(
+                      'วัน-เวลาเข้าจอด:',
+                      formatter.format(
+                          (bookingData['checkInDateTime'] as Timestamp)
+                              .toDate())),
+                  _buildInfoRow(
+                      'วัน-เวลาออก:',
+                      formatter.format(
+                          (bookingData['checkOutDateTime'] as Timestamp)
+                              .toDate())),
+                  _buildInfoRow('ระยะเวลาจอดทั้งหมด:', durationText),
+                ],
               ),
               const Divider(height: 32),
               _buildDetailSection(
                 context: context,
                 title: 'บริการเสริม',
                 icon: Icons.airport_shuttle_outlined,
-                details: {'รถรับส่ง': '$shuttleText ($passengerCount คน)'},
+                detailWidgets: [
+                  _buildInfoRow(
+                      'รถรับส่ง:', '$shuttleText ($passengerCount คน)'),
+                ],
               ),
               const Divider(height: 32),
+              // ใช้ List ของ Widget ที่สร้างไว้
               _buildDetailSection(
                 context: context,
                 title: 'สรุปค่าใช้จ่าย',
                 icon: Icons.receipt_long_outlined,
-                details: {
-                  'ยอดรวม (ก่อนหักส่วนลด)':
-                      '${totalCost.toStringAsFixed(2)} บาท',
-                  if (discountAmount > 0)
-                    'ส่วนลด (${promoCode ?? ''})':
-                        '-${discountAmount.toStringAsFixed(2)} บาท',
-                  'ยอดรวมสุทธิที่ชำระ':
-                      '${(totalCost - discountAmount).toStringAsFixed(2)} บาท',
-                },
+                detailWidgets:
+                    costCalculationDetails, // <-- ใช้ List ที่แจกแจงรายละเอียด
               ),
               const SizedBox(height: 32),
               ElevatedButton.icon(
